@@ -906,18 +906,22 @@ function weeklyFundedTotal(){
   return PEOPLE.reduce((s,p)=> s + (Number(stakes[p.code])||0), 0);
 }
 
-// Season-long cumulative form: +1 for a hit, -1 for a miss, running total from Week 1 onward.
+// Season-long cumulative form: +1 for a hit, -1 for a miss, running total from a Week 0
+// baseline of zero — so even the very first finalized week has a line to draw, not just a dot.
 function computeFormSeries(season){
   const finalizedAsc = season.weeks.filter(w=>weekStatus(w)==='finalized').sort((a,b)=>a.week-b.week);
+  const weeks = [{week:0, baseline:true}, ...finalizedAsc];
   const series = {};
   PEOPLE.forEach(p=>{
     let cum = 0;
-    series[p.code] = finalizedAsc.map(w=>{
+    const vals = [0];
+    finalizedAsc.forEach(w=>{
       cum += w.misses.includes(p.code) ? -1 : 1;
-      return cum;
+      vals.push(cum);
     });
+    series[p.code] = vals;
   });
-  return { weeks: finalizedAsc, series };
+  return { weeks, series, realWeeks: finalizedAsc.length };
 }
 
 function isWeekComplete(w){
@@ -1108,19 +1112,19 @@ function renderSeason(){
 function stamp(hit){ return hit ? '<span class="stamp hit">Y</span>' : '<span class="stamp miss">X</span>'; }
 
 function renderFormChart(){
-  const { weeks, series } = computeFormSeries(SEASON);
+  const { weeks, series, realWeeks } = computeFormSeries(SEASON);
   const wrap = document.getElementById('form-chart-wrap');
   const legend = document.getElementById('form-chart-legend');
-  const n = weeks.length;
-  if(n===0){
-    wrap.innerHTML = `<div class="empty-note">Form will chart here once a couple of weeks are finalized.</div>`;
+  const n = weeks.length; // includes the Week 0 baseline point
+  if(realWeeks===0){
+    wrap.innerHTML = `<div class="empty-note">Form will chart here once your first week is finalized.</div>`;
     legend.innerHTML = '';
     return;
   }
 
   const W = 640, H = 260, padL = 30, padR = 16, padT = 16, padB = 30;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-  const bound = Math.max(n, 2); // keeps a lone data point from sitting on a flat, uninformative axis
+  const bound = Math.max(realWeeks, 2); // keeps a single real week from sitting on a flat, uninformative axis
   const yMin = -bound, yMax = bound;
   const xFor = (i)=> n===1 ? (padL + plotW/2) : (padL + plotW * i/(n-1));
   const yFor = (v)=> padT + plotH * (1 - (v - yMin)/(yMax - yMin));
@@ -1138,7 +1142,8 @@ function renderFormChart(){
   const labelStep = n <= 12 ? 1 : Math.ceil(n/12);
   weeks.forEach((w,i)=>{
     if(i % labelStep !== 0 && i !== n-1) return; // always label the most recent week too
-    svg += `<text x="${xFor(i)}" y="${H-8}" text-anchor="middle" font-size="11" style="fill:var(--ink-soft);">WK ${w.week}</text>`;
+    const label = w.baseline ? 'START' : ('WK '+w.week);
+    svg += `<text x="${xFor(i)}" y="${H-8}" text-anchor="middle" font-size="11" style="fill:var(--ink-soft);">${label}</text>`;
   });
 
   // one line + dots per player, in their site color — dots shrink a bit once the season gets crowded
