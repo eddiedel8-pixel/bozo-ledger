@@ -1122,13 +1122,19 @@ function renderFormChart(){
     return;
   }
 
-  const W = 640, H = 260, padL = 30, padR = 16, padT = 16, padB = 30;
+  const W = 680, H = 260, padL = 30, padR = 56, padT = 16, padB = 30;
   const plotW = W - padL - padR, plotH = H - padT - padB;
   const bound = Math.max(realWeeks, 2); // keeps a single real week from sitting on a flat, uninformative axis
   const yMin = -bound, yMax = bound;
   const xFor = (i)=> n===1 ? (padL + plotW/2) : (padL + plotW * i/(n-1));
-  const yFor = (v)=> padT + plotH * (1 - (v - yMin)/(yMax - yMin));
-  const zeroY = yFor(0);
+  const yForRaw = (v)=> padT + plotH * (1 - (v - yMin)/(yMax - yMin));
+  const zeroY = yForRaw(0);
+
+  // Small constant per-player vertical offset (in pixels, not data) so lines with identical
+  // values fan out into visibly separate strands instead of stacking into one solid line.
+  const JITTER = 3.5;
+  const mid = (PEOPLE.length-1)/2;
+  const jitterFor = (idx)=> (idx - mid) * JITTER;
 
   let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto; display:block; font-family:'IBM Plex Mono',monospace;">`;
 
@@ -1146,14 +1152,21 @@ function renderFormChart(){
     svg += `<text x="${xFor(i)}" y="${H-8}" text-anchor="middle" font-size="11" style="fill:var(--ink-soft);">${label}</text>`;
   });
 
-  // one line + dots per player, in their site color — dots shrink a bit once the season gets crowded
+  // one line + dots per player, in their site color, nudged apart by a tiny fixed offset —
+  // dots shrink a bit once the season gets crowded
   const dotR = n > 16 ? 3 : (n > 8 ? 3.8 : 4.5);
-  PEOPLE.forEach(p=>{
+  PEOPLE.forEach((p,idx)=>{
+    const j = jitterFor(idx);
+    const yFor = (v)=> yForRaw(v) + j;
     const pts = series[p.code].map((v,i)=> `${xFor(i)},${yFor(v)}`).join(' ');
     svg += `<polyline points="${pts}" fill="none" stroke="${p.color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
     series[p.code].forEach((v,i)=>{
       svg += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${dotR}" fill="${p.color}" stroke="var(--paper)" stroke-width="1.5"/>`;
     });
+    // current-value label, right at the end of this player's line, in their color
+    const lastV = series[p.code][series[p.code].length-1];
+    const lastX = xFor(n-1), lastY = yFor(lastV);
+    svg += `<text x="${lastX+9}" y="${lastY+4}" font-size="12" font-weight="700" style="fill:${p.color};">${lastV>0?'+':''}${lastV}</text>`;
   });
 
   svg += `</svg>`;
