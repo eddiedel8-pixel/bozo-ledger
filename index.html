@@ -158,8 +158,6 @@
   tbody tr:hover{background:rgba(14,61,44,0.035);}
   td.num, th.num{font-family:'IBM Plex Mono',monospace; text-align:right;}
   td.center{text-align:center; font-size:15px;}
-  .form-table th{text-align:center;}
-  .form-table th:first-child{text-align:left;}
   .wk-badge{font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--ink-soft);}
   .jackpot-flag{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.1em; color:var(--gold); background:rgba(200,153,44,0.15); border:1px solid var(--gold); border-radius:999px; padding:2px 8px; margin-left:8px;}
   .cam-flag{display:inline-block; margin-left:6px; font-size:12px; opacity:0.75;}
@@ -407,13 +405,11 @@
     <div class="section">
       <div class="section-head">
         <h2>Current Form</h2>
-        <span class="tag">Streak, most recent finalized week first</span>
+        <span class="tag">Full season, from Week 1 · +1 per hit, -1 per miss</span>
       </div>
-      <div class="table-scroll">
-        <table class="form-table">
-          <thead><tr><th>Form</th><th>Diedel</th><th>Catenacci</th><th>Haegele</th><th>Shives</th><th>Goede</th></tr></thead>
-          <tbody id="form-tracker-body"></tbody>
-        </table>
+      <div class="card">
+        <div id="form-chart-wrap"></div>
+        <div id="form-chart-legend" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:14px; justify-content:center;"></div>
       </div>
     </div>
 
@@ -910,24 +906,25 @@ function weeklyFundedTotal(){
   return PEOPLE.reduce((s,p)=> s + (Number(stakes[p.code])||0), 0);
 }
 
-function computeForm(season){
-  const finalized = season.weeks.filter(w=>weekStatus(w)==='finalized').slice().sort((a,b)=>b.week-a.week);
-  const form = {};
+// Season-long cumulative form: +1 for a hit, -1 for a miss, running total from Week 1 onward.
+function computeFormSeries(season){
+  const finalizedAsc = season.weeks.filter(w=>weekStatus(w)==='finalized').sort((a,b)=>a.week-b.week);
+  const series = {};
   PEOPLE.forEach(p=>{
-    let type=null, count=0;
-    for(const w of finalized){
-      const cur = w.misses.includes(p.code) ? 'miss' : 'hit';
-      if(type===null){ type=cur; count=1; }
-      else if(cur===type){ count++; }
-      else break;
-    }
-    form[p.code] = {type, count};
+    let cum = 0;
+    series[p.code] = finalizedAsc.map(w=>{
+      cum += w.misses.includes(p.code) ? -1 : 1;
+      return cum;
+    });
   });
-  return form;
+  return { weeks: finalizedAsc, series };
 }
 
 function isWeekComplete(w){
-  return weekStatus(w)==='finalized' && PEOPLE.every(p=> w.settled && w.settled[p.code]);
+  if(w.closed) return true; // manually closed via the "Mark Complete" button
+  if(weekStatus(w)!=='finalized') return false;
+  // the payer fronted the money, so they never owe themselves — only check the other four
+  return PEOPLE.every(p => (w.payer && p.code===w.payer) || (w.settled && w.settled[p.code]));
 }
 
 // Who owes whom: for every bet with a recorded payer, everyone else who hasn't
@@ -1044,17 +1041,7 @@ function renderSeason(){
     `).join('');
   }
 
-  const form = computeForm(SEASON);
-  document.getElementById('form-tracker-body').innerHTML = `<tr>
-    <td class="wk-badge">CURRENT</td>
-    ${PEOPLE.map(p=>{
-      const f = form[p.code];
-      let content = '—';
-      if(f.type==='hit') content = `🔥 ${f.count}`;
-      else if(f.type==='miss') content = `💩 ${f.count}`;
-      return `<td class="center">${content}</td>`;
-    }).join('')}
-  </tr>`;
+  renderFormChart();
 
   const weeksAsc = [...SEASON.weeks].sort((a,b)=>a.week-b.week);
   document.getElementById('ledger-tag').textContent = weeksAsc.length ? `${weeksAsc.length} week${weeksAsc.length===1?'':'s'} · week 1 → week ${weeksAsc[weeksAsc.length-1].week}` : "empty — place this week's bet above";
@@ -1119,6 +1106,63 @@ function renderSeason(){
   ppProfitEl.textContent = fmt(c.perPersonProfit); ppProfitEl.className = 'v ' + (c.perPersonProfit>=0?'pos':'neg');
 }
 function stamp(hit){ return hit ? '<span class="stamp hit">Y</span>' : '<span class="stamp miss">X</span>'; }
+
+function renderFormChart(){
+  const { weeks, series } = computeFormSeries(SEASON);
+  const wrap = document.getElementById('form-chart-wrap');
+  const legend = document.getElementById('form-chart-legend');
+  const n = weeks.length;
+  if(n===0){
+    wrap.innerHTML = `<div class="empty-note">Form will chart here once a couple of weeks are finalized.</div>`;
+    legend.innerHTML = '';
+    return;
+  }
+
+  const W = 640, H = 260, padL = 30, padR = 16, padT = 16, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const bound = Math.max(n, 2); // keeps a lone data point from sitting on a flat, uninformative axis
+  const yMin = -bound, yMax = bound;
+  const xFor = (i)=> n===1 ? (padL + plotW/2) : (padL + plotW * i/(n-1));
+  const yFor = (v)=> padT + plotH * (1 - (v - yMin)/(yMax - yMin));
+  const zeroY = yFor(0);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto; display:block; font-family:'IBM Plex Mono',monospace;">`;
+
+  // gridlines: zero (solid) plus top/bottom bounds (dashed), all using CSS-var-aware inline styles
+  svg += `<line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" style="stroke:var(--ink-soft); stroke-width:1.5;"/>`;
+  svg += `<text x="${padL-6}" y="${zeroY+4}" text-anchor="end" font-size="11" style="fill:var(--ink-soft);">0</text>`;
+  svg += `<text x="${padL-6}" y="${padT+10}" text-anchor="end" font-size="11" style="fill:var(--ink-soft);">+${bound}</text>`;
+  svg += `<text x="${padL-6}" y="${H-padB}" text-anchor="end" font-size="11" style="fill:var(--ink-soft);">-${bound}</text>`;
+
+  // week labels along the x-axis — thin them out once the season has too many weeks to label cleanly
+  const labelStep = n <= 12 ? 1 : Math.ceil(n/12);
+  weeks.forEach((w,i)=>{
+    if(i % labelStep !== 0 && i !== n-1) return; // always label the most recent week too
+    svg += `<text x="${xFor(i)}" y="${H-8}" text-anchor="middle" font-size="11" style="fill:var(--ink-soft);">WK ${w.week}</text>`;
+  });
+
+  // one line + dots per player, in their site color — dots shrink a bit once the season gets crowded
+  const dotR = n > 16 ? 3 : (n > 8 ? 3.8 : 4.5);
+  PEOPLE.forEach(p=>{
+    const pts = series[p.code].map((v,i)=> `${xFor(i)},${yFor(v)}`).join(' ');
+    svg += `<polyline points="${pts}" fill="none" stroke="${p.color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
+    series[p.code].forEach((v,i)=>{
+      svg += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${dotR}" fill="${p.color}" stroke="var(--paper)" stroke-width="1.5"/>`;
+    });
+  });
+
+  svg += `</svg>`;
+  wrap.innerHTML = svg;
+
+  legend.innerHTML = PEOPLE.map(p=>{
+    const last = series[p.code][series[p.code].length-1];
+    return `<div style="display:flex; align-items:center; gap:7px; font-size:13px;">
+      <span style="width:11px; height:11px; border-radius:50%; background:${p.color}; display:inline-block; flex-shrink:0;"></span>
+      <span style="font-family:'Oswald',sans-serif; text-transform:uppercase;">${p.name}</span>
+      <span style="font-family:'IBM Plex Mono',monospace; color:${last>=0?'var(--stamp-green)':'var(--stamp-red)'};">${last>0?'+':''}${last}</span>
+    </div>`;
+  }).join('');
+}
 
 function renderOwedGridFor(kind){
   const p = prefixOf(kind);
@@ -1199,6 +1243,7 @@ function renderOpenBets(){
           </div>
           <div class="actions" style="margin-top:14px;">
             <button class="btn ghost sm" data-shareweek="${kind}:${week}">Share Summary Slip</button>
+            <button class="btn gold sm" data-complete="${kind}:${week}">Mark Complete</button>
           </div>
         </div>
       </div>`;
@@ -1249,6 +1294,19 @@ function renderOpenBets(){
   });
   container.querySelectorAll('[data-shareweek]').forEach(btn=>{
     btn.addEventListener('click', (e)=>{ e.stopPropagation(); const [kind,weekStr]=btn.dataset.shareweek.split(':'); openShareModalForBet(kind, parseInt(weekStr,10)); });
+  });
+  container.querySelectorAll('[data-complete]').forEach(btn=>{
+    btn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      const [kind, weekStr] = btn.dataset.complete.split(':');
+      const week = parseInt(weekStr,10);
+      const bet = betArray(kind).find(x=>x.week===week);
+      if(!bet) return;
+      if(!confirm(`Mark Week ${week} as fully settled and move it out of Open Bets?`)) return;
+      bet.closed = true;
+      await saveSeason();
+      renderSeason();
+    });
   });
 }
 
@@ -1310,20 +1368,41 @@ function compressImage(file, maxDim, quality){
 }
 async function readSlipWithAI(photo, promptText){
   // Calls our own Netlify function, which holds the Anthropic API key server-side.
-  const response = await fetch("/.netlify/functions/read-slip", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      base64: photo.base64,
-      mediaType: photo.mediaType,
-      prompt: promptText
-    })
-  });
-  const data = await response.json();
-  if(data.error) throw new Error(data.error);
+  let response;
+  try{
+    response = await fetch("/.netlify/functions/read-slip", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        base64: photo.base64,
+        mediaType: photo.mediaType,
+        prompt: promptText
+      })
+    });
+  }catch(networkErr){
+    throw new Error("Couldn't reach the server function — check your connection and try again.");
+  }
+  let data;
+  try{ data = await response.json(); }
+  catch(parseErr){ throw new Error(`Server returned an unreadable response (HTTP ${response.status}).`); }
+
+  if(data.error) throw new Error(typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error)));
+  if(!response.ok) throw new Error(`Request failed (HTTP ${response.status}).`);
+
   const textBlock = (data.content||[]).map(b=>b.text||'').join('');
-  const clean = textBlock.replace(/```json|```/g,'').trim();
-  return JSON.parse(clean);
+  if(!textBlock) throw new Error('The AI returned no text to read — try a clearer photo.');
+
+  let clean = textBlock.replace(/```json|```/g,'').trim();
+  // forgiving fallback: if the model added stray words around the JSON despite instructions,
+  // pull out just the outermost {...} block before parsing.
+  const first = clean.indexOf('{'), last = clean.lastIndexOf('}');
+  if(first !== -1 && last !== -1 && last > first) clean = clean.slice(first, last+1);
+
+  try{
+    return JSON.parse(clean);
+  }catch(jsonErr){
+    throw new Error(`Got a reply but couldn't read it as data: "${clean.slice(0,140)}"`);
+  }
 }
 
 function wireBetFlow(kind){
@@ -1364,7 +1443,8 @@ function wireBetFlow(kind){
       renderDraftReview(kind);
       document.getElementById(p+'-photo-note').textContent = "AI read: " + (parsed.notes || "done — review the numbers below before submitting.");
     }catch(err){
-      document.getElementById(p+'-photo-note').textContent = "Couldn't auto-read this slip — the photo is still attached, use Edit to enter the numbers manually.";
+      console.error('Slip read failed:', err);
+      document.getElementById(p+'-photo-note').textContent = "Couldn't auto-read this slip (" + (err && err.message ? err.message : 'unknown error') + ") — the photo is still attached, use Edit to enter the numbers manually.";
     }
     btn.disabled = false;
   });
