@@ -548,7 +548,7 @@
 
     <div class="section">
       <div class="actions">
-        <button class="btn ghost" id="btn-sync-historical">Sync This Season to Historical →</button>
+        <button class="btn ghost" id="btn-sync-historical" style="display:none">Sync This Season to Historical →</button>
       </div>
     </div>
   </div>
@@ -790,7 +790,7 @@ async function loadStorage(){
   }
 
   if(!histLoadFailed){
-    HISTORICAL = HISTORICAL.filter(x=> x.year !== '2025');
+    HISTORICAL = HISTORICAL.filter(x=> x.year !== '2025' && x.year !== ACTIVE_YEAR); // drops an accidental early archive of the live season
     [REAL_2024_25_SUMMARY, REAL_2025_26_SUMMARY].forEach(entry=>{
       const idx = HISTORICAL.findIndex(x=>x.year===entry.year);
       if(idx>=0) HISTORICAL[idx] = entry; else HISTORICAL.push(entry);
@@ -994,6 +994,7 @@ function computeDebts(season){
 function careerTotals(){
   const totals = {}; PEOPLE.forEach(p=> totals[p.name] = {hits:0, weeks:0, topCount:0, bozoCount:0});
   HISTORICAL.forEach(h=>{
+    if(h.year === SEASON.year) return; // live season is counted below; never double count
     if(h.peopleDetail){
       h.peopleDetail.forEach(pd=>{
         if(totals[pd.name]){ totals[pd.name].hits += Number(pd.hits)||0; totals[pd.name].weeks += Number(pd.weeks)||0; }
@@ -1725,12 +1726,8 @@ document.getElementById('sb-save').addEventListener('click', async ()=>{
   renderSeason();
 });
 
-document.getElementById('btn-sync-historical').addEventListener('click', async ()=>{
-  const entry = seasonToHistoricalEntry(SEASON);
-  const idx = HISTORICAL.findIndex(h=>h.year===SEASON.year);
-  if(idx>=0) HISTORICAL[idx] = entry; else HISTORICAL.push(entry);
-  await saveHistorical();
-  alert(`${SEASON.year} season synced to Historical.`);
+document.getElementById('btn-sync-historical').addEventListener('click', ()=>{
+  alert('Not needed — the live season already counts toward All-Time automatically. Archive it only when the season is over.');
 });
 
 /* =========================================================
