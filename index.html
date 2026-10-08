@@ -756,29 +756,52 @@ async function loadStorage(){
     return;
   }
 
+  let seasonLoadFailed = false, histLoadFailed = false;
+
   try{
     const snap = await db.collection('bozoLedger').doc('season_'+ACTIVE_YEAR).get();
-    SEASON = snap.exists ? snap.data() : blankSeason(ACTIVE_YEAR);
-    if(!SEASON.tdParlays) SEASON.tdParlays = [];
-    if(!SEASON.weeks) SEASON.weeks = [];
-    if(!SEASON.sideBets) SEASON.sideBets = [];
-  }catch(e){ console.error('load season failed', e); SEASON = blankSeason(ACTIVE_YEAR); }
+    if(snap.exists){
+      SEASON = snap.data();
+      if(!SEASON.tdParlays) SEASON.tdParlays = [];
+      if(!SEASON.weeks) SEASON.weeks = [];
+      if(!SEASON.sideBets) SEASON.sideBets = [];
+    } else {
+      // Confirmed — Firestore itself says this document has never been created. Safe to seed it.
+      SEASON = blankSeason(ACTIVE_YEAR);
+      await saveSeason();
+    }
+  }catch(e){
+    // The read itself failed (network blip, etc.) — we do NOT know whether real data exists.
+    // Use a blank season for THIS page view only; never write it back, so nothing gets erased.
+    console.error('load season failed', e);
+    seasonLoadFailed = true;
+    SEASON = blankSeason(ACTIVE_YEAR);
+    showLoadErrorBanner('this week\'s bets');
+  }
 
   try{
     const snap = await db.collection('bozoLedger').doc('historical').get();
     HISTORICAL = (snap.exists && snap.data().seasons) ? snap.data().seasons : [];
-  }catch(e){ console.error('load historical failed', e); HISTORICAL = []; }
+  }catch(e){
+    console.error('load historical failed', e);
+    histLoadFailed = true;
+    HISTORICAL = [REAL_2024_25_SUMMARY, REAL_2025_26_SUMMARY];
+    showLoadErrorBanner('historical seasons');
+  }
 
-  HISTORICAL = HISTORICAL.filter(x=> x.year !== '2025');
-  [REAL_2024_25_SUMMARY, REAL_2025_26_SUMMARY].forEach(entry=>{
-    const idx = HISTORICAL.findIndex(x=>x.year===entry.year);
-    if(idx>=0) HISTORICAL[idx] = entry; else HISTORICAL.push(entry);
-  });
-  HISTORICAL.sort((a,b)=> String(a.year).localeCompare(String(b.year)));
-  await saveHistorical();
-  await saveSeason();
+  if(!histLoadFailed){
+    HISTORICAL = HISTORICAL.filter(x=> x.year !== '2025');
+    [REAL_2024_25_SUMMARY, REAL_2025_26_SUMMARY].forEach(entry=>{
+      const idx = HISTORICAL.findIndex(x=>x.year===entry.year);
+      if(idx>=0) HISTORICAL[idx] = entry; else HISTORICAL.push(entry);
+    });
+    HISTORICAL.sort((a,b)=> String(a.year).localeCompare(String(b.year)));
+    await saveHistorical(); // safe — this is a real read merged with the known archive constants
+  }
 
   try{ currentUser = JSON.parse(localStorage.getItem(LS_CURRENT_USER) || 'null'); }catch(e){ currentUser = null; }
+
+  if(seasonLoadFailed || histLoadFailed) return; // don't wire up live sync on top of unreliable state
 
   // Live sync: when anyone else changes the shared data, everyone's page updates automatically.
   db.collection('bozoLedger').doc('season_'+ACTIVE_YEAR).onSnapshot(snap=>{
@@ -796,6 +819,12 @@ async function loadStorage(){
     if(document.getElementById('view-historical').classList.contains('active')) renderHistorical();
     if(document.getElementById('view-alltime').classList.contains('active')) renderAllTime();
   });
+}
+function showLoadErrorBanner(what){
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed; top:0; left:0; right:0; z-index:999; background:#a83b2a; color:#fff; padding:12px 20px; font-family:sans-serif; font-size:14px; text-align:center;';
+  banner.textContent = `Couldn't load ${what} from the shared database — check your connection and reload. Showing a blank view for now; nothing has been erased.`;
+  document.body.prepend(banner);
 }
 async function saveSeason(){
   if(!firebaseReady) return;
